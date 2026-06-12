@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   ScrollView,
@@ -9,133 +9,122 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lightbulb, CheckCircle, Circle, Sparkles, RotateCcw } from 'lucide-react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { CheckCircle, Lightbulb, RotateCcw } from 'lucide-react-native';
 import { colors } from '@/lib/colors';
 import { supabase } from '@/lib/supabase';
+import { useMode } from '@/context/ModeContext';
+import { useFocus } from '@/hooks/useFocus';
+import { useBacklog } from '@/hooks/useBacklog';
+import { useAnchors } from '@/hooks/useAnchors';
+import { useNow } from '@/hooks/useNow';
+import {
+  buildEasierStep1,
+  buildSteps,
+  detectCategory,
+  detectClarify,
+} from '@/lib/unstickEngine';
+import { buildPlanBlocks, buildAnchorTimestamps, formatTimeShort } from '@/lib/time';
+import { PlanTimeline } from '@/components/PlanTimeline';
 
-type Phase = 'input' | 'loading' | 'steps';
+type MainTab = 'unstick' | 'plan';
+type UnstickPhase = 'input' | 'clarify' | 'steps' | 'done';
+type PlanPhase = 'input' | 'details' | 'timeline';
 
-/*
-  Unstick Me Breakdown Engine
-  ───────────────────────────
-  RULES (hardcoded, no LLM override):
-  1. Step 1 must ALWAYS be an incredibly low-stakes physical action
-     (e.g. clear a space on your desk, put all papers in one pile, stand up).
-     Never "open the doc" or "read a line" — those are cognitive, not physical.
-  2. Step 2 must isolate a single logistical detail
-     (e.g. find the one phone number, locate the one form, identify the one email).
-  3. Step 3 must be a tiny verification check
-     (e.g. does the form have all fields?, is the address correct?, does the email sound okay?).
-  4. Never show more than one checkbox at a time — cognitive load stays at absolute zero.
-  5. For paperwork/bureaucracy tasks, Step 1 must involve physical space clearing or gathering.
-*/
-
-const SIMULATED_BREAKDOWNS: Record<string, string[]> = {
-  default: [
-    'Clear a small space on your desk — just push everything to one side',
-    'Find the one specific thing you need (a link, a name, a number) and put it front of you',
-    'Check: do you have that one thing you need ready? Yes? You\'re set.',
-  ],
-  email: [
-    'Put your phone face-down and close all other tabs — just a blank screen',
-    'Find the one email you need to reply to and open only that',
-    'Read just the first line of the original email — what are they actually asking?',
-  ],
-  cleaning: [
-    'Stand up and walk to the messiest spot — don\'t touch anything yet, just stand there for 10 seconds',
-    'Pick up exactly three items and put each one where it belongs',
-    'Look at that spot — is it even slightly better? That\'s enough for now.',
-  ],
-  studying: [
-    'Put your phone in another room or on silent across the room',
-    'Open to the exact page or section — don\'t read yet, just have it open',
-    'Read just the first sentence. That\'s all. One sentence.',
-  ],
-  work: [
-    'Close every app and tab except the one you need — one screen, one thing',
-    'Find the specific file, doc, or task and open only that',
-    'Read just the title or first line — what is this actually about?',
-  ],
-  paperwork: [
-    'Clear your desk surface — push everything off to one side so you have a blank workspace',
-    'Gather ALL the papers/forms into one pile — don\'t sort, just stack',
-    'Find the ONE form or document that has a deadline — put it on top',
-  ],
-  bureaucracy: [
-    'Stand up and physically walk to wherever the documents live — don\'t bring them yet',
-    'Bring just the ONE document you need most to your cleared workspace',
-    'Find the single field or checkbox that matters first — don\'t fill it, just locate it',
-  ],
-  phone_call: [
-    'Write the phone number on a sticky note and stick it to your screen — no searching mid-call',
-    'Write down exactly one sentence you need to say ("I need to change my appointment")',
-    'Check: do you have your account number or reference ready? That\'s all you need.',
-  ],
-};
-
-function getBreakdown(text: string): string[] {
-  const lower = text.toLowerCase();
-  if (lower.includes('email') || lower.includes('message') || lower.includes('reply')) {
-    return SIMULATED_BREAKDOWNS.email;
-  }
-  if (lower.includes('clean') || lower.includes('tidy') || lower.includes('mess') || lower.includes('dishes')) {
-    return SIMULATED_BREAKDOWNS.cleaning;
-  }
-  if (lower.includes('study') || lower.includes('read') || lower.includes('homework') || lower.includes('class')) {
-    return SIMULATED_BREAKDOWNS.studying;
-  }
-  if (lower.includes('paperwork') || lower.includes('form') || lower.includes('application') || lower.includes('document') || lower.includes('print') || lower.includes('fill out')) {
-    return SIMULATED_BREAKDOWNS.paperwork;
-  }
-  if (lower.includes('bureau') || lower.includes('insurance') || lower.includes('tax') || lower.includes('permit') || lower.includes('license') || lower.includes('application') || lower.includes('submit')) {
-    return SIMULATED_BREAKDOWNS.bureaucracy;
-  }
-  if (lower.includes('call') || lower.includes('phone') || lower.includes('appointment') || lower.includes('schedule') || lower.includes('book')) {
-    return SIMULATED_BREAKDOWNS.phone_call;
-  }
-  if (lower.includes('work') || lower.includes('project') || lower.includes('report') || lower.includes('meeting')) {
-    return SIMULATED_BREAKDOWNS.work;
-  }
-  return SIMULATED_BREAKDOWNS.default;
-}
+const PREP_OPTIONS = [5, 10, 15, 30];
+const COMMUTE_OPTIONS = [0, 5, 15, 30];
 
 export default function UnstuckScreen() {
-  const [phase, setPhase] = useState<Phase>('input');
+  const { tab, task: taskParam } = useLocalSearchParams<{ tab?: string; task?: string }>();
+  const router = useRouter();
+  const { mode } = useMode();
+  const focus = useFocus(mode);
+  const backlog = useBacklog(mode);
+  const anchors = useAnchors();
+  const now = useNow();
+
+  const [mainTab, setMainTab] = useState<MainTab>('unstick');
+
+  // Unstick state
+  const [phase, setPhase] = useState<UnstickPhase>('input');
   const [task, setTask] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
+  const [clarifyValue, setClarifyValue] = useState<string | undefined>();
+  const [clarifyQuestion, setClarifyQuestion] = useState<ReturnType<typeof detectClarify>>(null);
   const [currentStep, setCurrentStep] = useState(0);
   const [completedSteps, setCompletedSteps] = useState<boolean[]>([]);
+  const [skipCount, setSkipCount] = useState(0);
+  const [breakdownId, setBreakdownId] = useState<string | null>(null);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  async function handleBreakdown() {
+  // Plan state
+  const [planPhase, setPlanPhase] = useState<PlanPhase>('input');
+  const [planTask, setPlanTask] = useState('');
+  const [planHour, setPlanHour] = useState('3');
+  const [planMinute, setPlanMinute] = useState('00');
+  const [planMeridiem, setPlanMeridiem] = useState<'AM' | 'PM'>('PM');
+  const [prepMin, setPrepMin] = useState(10);
+  const [commuteMin, setCommuteMin] = useState(15);
+  const [planBlocks, setPlanBlocks] = useState<ReturnType<typeof buildPlanBlocks>>([]);
+
+  useEffect(() => {
+    if (tab === 'plan') setMainTab('plan');
+    if (tab === 'unstick') setMainTab('unstick');
+    if (taskParam) {
+      setTask(taskParam);
+      setPlanTask(taskParam);
+    }
+  }, [tab, taskParam]);
+
+  function startBreakdown() {
     if (!task.trim()) return;
-    setPhase('loading');
-
-    await new Promise((res) => setTimeout(res, 1800));
-
-    const breakdown = getBreakdown(task);
-    setSteps(breakdown);
-    setCompletedSteps(new Array(breakdown.length).fill(false));
-    setCurrentStep(0);
-
-    try {
-      await supabase.from('task_breakdowns').insert({
-        original_task: task,
-        micro_steps: breakdown,
-        steps_completed: 0,
-      });
-    } catch (_) {}
-
-    Animated.sequence([
-      Animated.timing(fadeAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
-    ]).start();
-
-    setPhase('steps');
+    const clarify = detectClarify(task);
+    if (clarify) {
+      setClarifyQuestion(clarify);
+      setPhase('clarify');
+      return;
+    }
+    goToSteps(task);
   }
 
-  function completeStep(idx: number) {
+  async function goToSteps(taskText: string, clarify?: string) {
+    if (clarify === 'plan') {
+      setMainTab('plan');
+      setPlanTask(taskText);
+      setPlanPhase('input');
+      setPhase('input');
+      return;
+    }
+    const cat = detectCategory(taskText, clarify);
+    setClarifyValue(clarify);
+    const built = buildSteps(taskText, cat, clarify);
+    setSteps(built);
+    setCompletedSteps(new Array(built.length).fill(false));
+    setCurrentStep(0);
+    setSkipCount(0);
+    setPhase('steps');
+
+    const { data } = await supabase
+      .from('task_breakdowns')
+      .insert({ original_task: taskText, micro_steps: built, steps_completed: 0 })
+      .select()
+      .maybeSingle();
+    if (data) setBreakdownId(data.id);
+  }
+
+  function handleClarify(value: string) {
+    if (value === 'plan') {
+      setMainTab('plan');
+      setPlanTask(task);
+      setPlanPhase('details');
+      setPhase('input');
+      return;
+    }
+    goToSteps(task, value);
+  }
+
+  async function completeStep(idx: number) {
     Animated.sequence([
       Animated.timing(scaleAnim, { toValue: 1.04, duration: 120, useNativeDriver: true }),
       Animated.timing(scaleAnim, { toValue: 1, duration: 120, useNativeDriver: true }),
@@ -145,24 +134,82 @@ export default function UnstuckScreen() {
     updated[idx] = true;
     setCompletedSteps(updated);
 
+    if (breakdownId) {
+      await supabase
+        .from('task_breakdowns')
+        .update({ steps_completed: idx + 1 })
+        .eq('id', breakdownId);
+    }
+
     setTimeout(() => {
       if (idx + 1 < steps.length) {
         Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true }).start(() => {
           setCurrentStep(idx + 1);
           Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }).start();
         });
+      } else {
+        setPhase('done');
       }
-    }, 500);
+    }, 400);
   }
 
-  function reset() {
+  function skipStep() {
+    const easier = buildEasierStep1();
+    const newSteps = [...steps];
+    newSteps[currentStep] = easier;
+    setSteps(newSteps);
+    setSkipCount((c) => c + 1);
+  }
+
+  function resetUnstick() {
     setPhase('input');
     setTask('');
     setSteps([]);
     setCurrentStep(0);
     setCompletedSteps([]);
+    setSkipCount(0);
+    setBreakdownId(null);
+    setClarifyQuestion(null);
     fadeAnim.setValue(1);
     scaleAnim.setValue(1);
+  }
+
+  function buildPlan() {
+    const timeText = `${planHour}:${planMinute} ${planMeridiem}`;
+    const timestamps = buildAnchorTimestamps(timeText, commuteMin, prepMin);
+    if (!timestamps) return;
+    const eventTime = new Date(timestamps.anchor_at);
+    const blocks = buildPlanBlocks(planTask.trim() || 'Event', eventTime, prepMin, commuteMin);
+    setPlanBlocks(blocks);
+    setPlanPhase('timeline');
+  }
+
+  async function savePlanToCalendar() {
+    const timeText = `${planHour}:${planMinute} ${planMeridiem}`;
+    await anchors.save(planTask.trim() || 'Event', timeText, commuteMin, prepMin);
+    const timestamps = buildAnchorTimestamps(timeText, commuteMin, prepMin);
+    if (timestamps) {
+      await supabase.from('adhd_schedules').insert({
+        deadline_label: planTask.trim() || 'Event',
+        deadline_at: timestamps.anchor_at,
+        steps: planBlocks.map((b) => ({
+          label: b.label,
+          time: b.time.toISOString(),
+          coaching: b.coaching,
+        })),
+      });
+    }
+    router.push('/tasks');
+  }
+
+  async function addToFocus() {
+    await focus.add(task);
+    router.push({ pathname: '/tasks', params: { segment: 'focus' } });
+  }
+
+  async function addToBacklog() {
+    await backlog.add(task);
+    router.push({ pathname: '/tasks', params: { segment: 'backlog' } });
   }
 
   const allDone = completedSteps.length > 0 && completedSteps.every(Boolean);
@@ -177,102 +224,275 @@ export default function UnstuckScreen() {
         <View style={styles.header}>
           <View style={styles.titleRow}>
             <Lightbulb size={22} color={colors.accent} strokeWidth={2} />
-            <Text style={styles.title}>Unstuck Me</Text>
+            <Text style={styles.title}>Unstuck</Text>
           </View>
-          <Text style={styles.subtitle}>Break it into tiny, doable pieces</Text>
+          <Text style={styles.subtitle}>Break it down or plan backward from a deadline</Text>
         </View>
 
-        {phase === 'input' && (
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>What has you frozen right now?</Text>
-            <Text style={styles.cardHint}>
-              Don't filter yourself — just describe what feels overwhelming.
-            </Text>
-            <TextInput
-              style={styles.textarea}
-              value={task}
-              onChangeText={setTask}
-              placeholder="e.g. I have to send that email but I keep avoiding it and I don't know where to start..."
-              placeholderTextColor={colors.textMuted}
-              multiline
-              numberOfLines={5}
-              textAlignVertical="top"
-            />
+        <View style={styles.mainTabs}>
+          {(['unstick', 'plan'] as MainTab[]).map((t) => (
             <TouchableOpacity
-              style={[styles.primaryBtn, !task.trim() && styles.primaryBtnDisabled]}
-              onPress={handleBreakdown}
-              activeOpacity={0.8}
-              disabled={!task.trim()}>
-              <Sparkles size={18} color={colors.black} strokeWidth={2} />
-              <Text style={styles.primaryBtnText}>Break it down for me</Text>
+              key={t}
+              style={[styles.mainTab, mainTab === t && styles.mainTabActive]}
+              onPress={() => setMainTab(t)}
+              activeOpacity={0.8}>
+              <Text style={[styles.mainTabText, mainTab === t && styles.mainTabTextActive]}>
+                {t === 'unstick' ? 'Unstick' : 'Plan it'}
+              </Text>
             </TouchableOpacity>
-          </View>
-        )}
+          ))}
+        </View>
 
-        {phase === 'loading' && (
-          <View style={styles.loadingCard}>
-            <Text style={styles.loadingEmoji}>🧠</Text>
-            <Text style={styles.loadingTitle}>Working on it...</Text>
-            <Text style={styles.loadingHint}>Finding just 3 tiny steps for you</Text>
-          </View>
-        )}
-
-        {phase === 'steps' && !allDone && (
-          <Animated.View style={[styles.stepsSection, { opacity: fadeAnim }]}>
-            <View style={styles.taskContext}>
-              <Text style={styles.taskContextLabel}>You said:</Text>
-              <Text style={styles.taskContextText} numberOfLines={2}>{task}</Text>
-            </View>
-
-            <Text style={styles.stepsHeading}>
-              Focus on just this one thing:
-            </Text>
-
-            <Animated.View style={[styles.bigCheckCard, { transform: [{ scale: scaleAnim }] }]}>
-              <View style={styles.stepNumBadge}>
-                <Text style={styles.stepNumBadgeText}>Step {currentStep + 1} of {steps.length}</Text>
-              </View>
-              <Text style={styles.bigStepText}>{steps[currentStep]}</Text>
-              <TouchableOpacity
-                style={styles.checkBtn}
-                onPress={() => completeStep(currentStep)}
-                activeOpacity={0.85}>
-                <CheckCircle size={28} color={colors.white} strokeWidth={2} />
-                <Text style={styles.checkBtnText}>I did it</Text>
-              </TouchableOpacity>
-            </Animated.View>
-
-            <View style={styles.progressDots}>
-              {steps.map((_, i) => (
-                <View
-                  key={i}
-                  style={[
-                    styles.dot,
-                    i < currentStep && styles.dotComplete,
-                    i === currentStep && styles.dotActive,
-                  ]}
+        {mainTab === 'unstick' && (
+          <>
+            {phase === 'input' && (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>What has you frozen right now?</Text>
+                <Text style={styles.cardHint}>
+                  Don't filter yourself — just describe what feels overwhelming.
+                </Text>
+                <TextInput
+                  style={styles.textarea}
+                  value={task}
+                  onChangeText={setTask}
+                  placeholder="e.g. I have to send that email but I keep avoiding it..."
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  numberOfLines={5}
+                  textAlignVertical="top"
                 />
-              ))}
-            </View>
+                <TouchableOpacity
+                  style={[styles.primaryBtn, !task.trim() && styles.primaryBtnDisabled]}
+                  onPress={startBreakdown}
+                  activeOpacity={0.8}
+                  disabled={!task.trim()}>
+                  <Text style={styles.primaryBtnText}>Break it down</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
-            <Text style={styles.reassurance}>
-              That's the only thing you need to do right now.
-            </Text>
-          </Animated.View>
+            {phase === 'clarify' && clarifyQuestion && (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>{clarifyQuestion.question}</Text>
+                {clarifyQuestion.options.map((opt) => (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={styles.clarifyBtn}
+                    onPress={() => handleClarify(opt.value)}
+                    activeOpacity={0.8}>
+                    <Text style={styles.clarifyText}>{opt.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            {phase === 'steps' && !allDone && (
+              <Animated.View style={[styles.stepsSection, { opacity: fadeAnim }]}>
+                <View style={styles.taskContext}>
+                  <Text style={styles.taskContextLabel}>You said:</Text>
+                  <Text style={styles.taskContextText} numberOfLines={2}>{task}</Text>
+                </View>
+
+                <Text style={styles.stepsHeading}>Focus on just this one thing:</Text>
+
+                <Animated.View style={[styles.bigCheckCard, { transform: [{ scale: scaleAnim }] }]}>
+                  <View style={styles.stepNumBadge}>
+                    <Text style={styles.stepNumBadgeText}>
+                      Step {currentStep + 1} of {steps.length}
+                    </Text>
+                  </View>
+                  <Text style={styles.bigStepText}>{steps[currentStep]}</Text>
+                  <TouchableOpacity
+                    style={styles.checkBtn}
+                    onPress={() => completeStep(currentStep)}
+                    activeOpacity={0.85}>
+                    <CheckCircle size={28} color={colors.white} strokeWidth={2} />
+                    <Text style={styles.checkBtnText}>I did it</Text>
+                  </TouchableOpacity>
+                </Animated.View>
+
+                <TouchableOpacity style={styles.skipBtn} onPress={skipStep} activeOpacity={0.7}>
+                  <Text style={styles.skipText}>Skip — show me something easier</Text>
+                </TouchableOpacity>
+
+                {skipCount >= 2 && (
+                  <View style={styles.stuckCard}>
+                    <Text style={styles.stuckTitle}>Still stuck?</Text>
+                    <TouchableOpacity onPress={() => addToBacklog()} style={styles.stuckAction}>
+                      <Text style={styles.stuckActionText}>Save to backlog for later</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setMainTab('plan');
+                        setPlanTask(task);
+                        setPlanPhase('details');
+                      }}
+                      style={styles.stuckAction}>
+                      <Text style={styles.stuckActionText}>Try planning it instead</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                <View style={styles.progressDots}>
+                  {steps.map((_, i) => (
+                    <View
+                      key={i}
+                      style={[
+                        styles.dot,
+                        i < currentStep && styles.dotComplete,
+                        i === currentStep && styles.dotActive,
+                      ]}
+                    />
+                  ))}
+                </View>
+              </Animated.View>
+            )}
+
+            {phase === 'done' && (
+              <View style={styles.doneCard}>
+                <Text style={styles.doneEmoji}>🎉</Text>
+                <Text style={styles.doneTitle}>You did all 3 steps.</Text>
+                <Text style={styles.doneText}>That was the hardest part — getting started.</Text>
+                <View style={styles.doneActions}>
+                  <TouchableOpacity style={styles.doneActionBtn} onPress={addToFocus} activeOpacity={0.8}>
+                    <Text style={styles.doneActionText}>Add to today's focus</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.doneActionBtn} onPress={addToBacklog} activeOpacity={0.8}>
+                    <Text style={styles.doneActionText}>Save to backlog</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.doneActionBtn}
+                    onPress={() => {
+                      setMainTab('plan');
+                      setPlanTask(task);
+                      setPlanPhase('details');
+                    }}
+                    activeOpacity={0.8}>
+                    <Text style={styles.doneActionText}>Plan the rest</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.resetBtn} onPress={resetUnstick} activeOpacity={0.8}>
+                    <RotateCcw size={16} color={colors.textSecondary} strokeWidth={2} />
+                    <Text style={styles.resetBtnText}>Done for now</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </>
         )}
 
-        {phase === 'steps' && allDone && (
-          <View style={styles.doneCard}>
-            <Text style={styles.doneEmoji}>🎉</Text>
-            <Text style={styles.doneTitle}>You did all 3 steps.</Text>
-            <Text style={styles.doneText}>
-              That was the hardest part — getting started. Look at you.
-            </Text>
-            <TouchableOpacity style={styles.resetBtn} onPress={reset} activeOpacity={0.8}>
-              <RotateCcw size={16} color={colors.textSecondary} strokeWidth={2} />
-              <Text style={styles.resetBtnText}>Try a new task</Text>
-            </TouchableOpacity>
-          </View>
+        {mainTab === 'plan' && (
+          <>
+            {planPhase === 'input' && (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>What's the thing with a deadline?</Text>
+                <TextInput
+                  style={styles.textarea}
+                  value={planTask}
+                  onChangeText={setPlanTask}
+                  placeholder="e.g. Doctor appointment, turn in essay..."
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  numberOfLines={3}
+                  textAlignVertical="top"
+                />
+                <TouchableOpacity
+                  style={[styles.primaryBtn, !planTask.trim() && styles.primaryBtnDisabled]}
+                  onPress={() => setPlanPhase('details')}
+                  disabled={!planTask.trim()}
+                  activeOpacity={0.8}>
+                  <Text style={styles.primaryBtnText}>Next</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {planPhase === 'details' && (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>When is it?</Text>
+                <View style={styles.timeRow}>
+                  <TextInput
+                    style={[styles.timeInput, { flex: 1 }]}
+                    value={planHour}
+                    onChangeText={setPlanHour}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                  />
+                  <Text style={styles.colon}>:</Text>
+                  <TextInput
+                    style={[styles.timeInput, { flex: 1 }]}
+                    value={planMinute}
+                    onChangeText={setPlanMinute}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                  />
+                  <View style={styles.meridiemRow}>
+                    {(['AM', 'PM'] as const).map((m) => (
+                      <TouchableOpacity
+                        key={m}
+                        style={[styles.meridiemBtn, planMeridiem === m && styles.meridiemActive]}
+                        onPress={() => setPlanMeridiem(m)}>
+                        <Text style={[styles.meridiemText, planMeridiem === m && styles.meridiemTextActive]}>
+                          {m}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+
+                <Text style={styles.fieldLabel}>Prep time (minutes)</Text>
+                <View style={styles.optionRow}>
+                  {PREP_OPTIONS.map((v) => (
+                    <TouchableOpacity
+                      key={v}
+                      style={[styles.optionChip, prepMin === v && styles.optionChipActive]}
+                      onPress={() => setPrepMin(v)}>
+                      <Text style={[styles.optionText, prepMin === v && styles.optionTextActive]}>{v}m</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={styles.fieldLabel}>Commute / travel (minutes)</Text>
+                <View style={styles.optionRow}>
+                  {COMMUTE_OPTIONS.map((v) => (
+                    <TouchableOpacity
+                      key={v}
+                      style={[styles.optionChip, commuteMin === v && styles.optionChipActive]}
+                      onPress={() => setCommuteMin(v)}>
+                      <Text style={[styles.optionText, commuteMin === v && styles.optionTextActive]}>
+                        {v === 0 ? 'None' : `${v}m`}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <TouchableOpacity style={styles.primaryBtn} onPress={buildPlan} activeOpacity={0.8}>
+                  <Text style={styles.primaryBtnText}>Show me the timeline</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {planPhase === 'timeline' && (
+              <View style={styles.card}>
+                <Text style={styles.cardTitle}>{planTask}</Text>
+                <Text style={styles.planDeadline}>
+                  Event at {formatTimeShort(new Date(buildAnchorTimestamps(`${planHour}:${planMinute} ${planMeridiem}`, commuteMin, prepMin)!.anchor_at))}
+                </Text>
+                <PlanTimeline blocks={planBlocks} now={now} />
+                <TouchableOpacity style={styles.primaryBtn} onPress={savePlanToCalendar} activeOpacity={0.8}>
+                  <Text style={styles.primaryBtnText}>Add to calendar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.secondaryBtn}
+                  onPress={() => {
+                    setMainTab('unstick');
+                    setTask(planTask);
+                    goToSteps(planTask);
+                  }}
+                  activeOpacity={0.8}>
+                  <Text style={styles.secondaryBtnText}>Break it down too</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </>
         )}
       </ScrollView>
     </SafeAreaView>
@@ -283,27 +503,24 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   scroll: { flex: 1 },
   container: { paddingBottom: 40 },
-  header: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 16,
-  },
-  titleRow: {
+  header: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 12 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  title: { fontSize: 24, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  subtitle: { fontSize: 14, fontFamily: 'Inter_400Regular', color: colors.textMuted },
+  mainTabs: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
+    marginHorizontal: 16,
+    marginBottom: 12,
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  title: {
-    fontSize: 24,
-    fontFamily: 'Inter_700Bold',
-    color: colors.textPrimary,
-  },
-  subtitle: {
-    fontSize: 14,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textMuted,
-  },
+  mainTab: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
+  mainTabActive: { backgroundColor: colors.primaryMuted },
+  mainTabText: { fontSize: 14, fontFamily: 'Inter_500Medium', color: colors.textMuted },
+  mainTabTextActive: { color: colors.primaryLight, fontFamily: 'Inter_700Bold' },
   card: {
     margin: 16,
     backgroundColor: colors.surface,
@@ -313,18 +530,8 @@ const styles = StyleSheet.create({
     padding: 24,
     gap: 16,
   },
-  cardTitle: {
-    fontSize: 19,
-    fontFamily: 'Inter_700Bold',
-    color: colors.textPrimary,
-    lineHeight: 27,
-  },
-  cardHint: {
-    fontSize: 13,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textSecondary,
-    lineHeight: 20,
-  },
+  cardTitle: { fontSize: 19, fontFamily: 'Inter_700Bold', color: colors.textPrimary, lineHeight: 27 },
+  cardHint: { fontSize: 13, fontFamily: 'Inter_400Regular', color: colors.textSecondary, lineHeight: 20 },
   textarea: {
     backgroundColor: colors.surfaceElevated,
     borderRadius: 14,
@@ -335,52 +542,34 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: 'Inter_400Regular',
     color: colors.textPrimary,
-    minHeight: 120,
+    minHeight: 100,
     lineHeight: 22,
   },
   primaryBtn: {
     backgroundColor: colors.accent,
     borderRadius: 14,
     paddingVertical: 14,
-    paddingHorizontal: 20,
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
   },
-  primaryBtnDisabled: {
-    opacity: 0.4,
-  },
-  primaryBtnText: {
-    fontSize: 16,
-    fontFamily: 'Inter_700Bold',
-    color: colors.black,
-  },
-  loadingCard: {
-    margin: 16,
-    backgroundColor: colors.surface,
-    borderRadius: 20,
+  primaryBtnDisabled: { opacity: 0.4 },
+  primaryBtnText: { fontSize: 16, fontFamily: 'Inter_700Bold', color: colors.black },
+  secondaryBtn: {
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 48,
-    alignItems: 'center',
-    gap: 12,
   },
-  loadingEmoji: { fontSize: 40 },
-  loadingTitle: {
-    fontSize: 20,
-    fontFamily: 'Inter_700Bold',
-    color: colors.textPrimary,
-  },
-  loadingHint: {
-    fontSize: 14,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textSecondary,
-  },
-  stepsSection: {
+  secondaryBtnText: { fontSize: 15, fontFamily: 'Inter_600SemiBold', color: colors.textSecondary },
+  clarifyBtn: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
     padding: 16,
-    gap: 16,
   },
+  clarifyText: { fontSize: 15, fontFamily: 'Inter_500Medium', color: colors.textPrimary },
+  stepsSection: { padding: 16, gap: 16 },
   taskContext: {
     backgroundColor: colors.surfaceElevated,
     borderRadius: 14,
@@ -396,18 +585,8 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
-  taskContextText: {
-    fontSize: 13,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textSecondary,
-    lineHeight: 19,
-  },
-  stepsHeading: {
-    fontSize: 16,
-    fontFamily: 'Inter_500Medium',
-    color: colors.textSecondary,
-    paddingHorizontal: 4,
-  },
+  taskContextText: { fontSize: 13, fontFamily: 'Inter_400Regular', color: colors.textSecondary, lineHeight: 19 },
+  stepsHeading: { fontSize: 16, fontFamily: 'Inter_500Medium', color: colors.textSecondary, paddingHorizontal: 4 },
   bigCheckCard: {
     backgroundColor: colors.surface,
     borderRadius: 24,
@@ -417,17 +596,8 @@ const styles = StyleSheet.create({
     gap: 20,
     alignItems: 'center',
   },
-  stepNumBadge: {
-    backgroundColor: colors.accentMuted,
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-  },
-  stepNumBadgeText: {
-    fontSize: 12,
-    fontFamily: 'Inter_700Bold',
-    color: colors.accent,
-  },
+  stepNumBadge: { backgroundColor: colors.accentMuted, borderRadius: 20, paddingHorizontal: 12, paddingVertical: 4 },
+  stepNumBadgeText: { fontSize: 12, fontFamily: 'Inter_700Bold', color: colors.accent },
   bigStepText: {
     fontSize: 22,
     fontFamily: 'Inter_700Bold',
@@ -444,37 +614,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
-  checkBtnText: {
-    fontSize: 18,
-    fontFamily: 'Inter_700Bold',
-    color: colors.black,
-  },
-  progressDots: {
-    flexDirection: 'row',
+  checkBtnText: { fontSize: 18, fontFamily: 'Inter_700Bold', color: colors.black },
+  skipBtn: { alignItems: 'center', paddingVertical: 8 },
+  skipText: { fontSize: 13, fontFamily: 'Inter_500Medium', color: colors.textMuted },
+  stuckCard: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: 14,
+    padding: 16,
     gap: 8,
-    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: colors.border,
-  },
-  dotActive: {
-    backgroundColor: colors.accent,
-    width: 24,
-  },
-  dotComplete: {
-    backgroundColor: colors.success,
-  },
-  reassurance: {
-    fontSize: 13,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textMuted,
-    textAlign: 'center',
-    lineHeight: 20,
-    paddingHorizontal: 16,
-  },
+  stuckTitle: { fontSize: 14, fontFamily: 'Inter_700Bold', color: colors.textSecondary },
+  stuckAction: { paddingVertical: 8 },
+  stuckActionText: { fontSize: 14, fontFamily: 'Inter_500Medium', color: colors.primaryLight },
+  progressDots: { flexDirection: 'row', gap: 8, justifyContent: 'center' },
+  dot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.border },
+  dotActive: { backgroundColor: colors.accent, width: 24 },
+  dotComplete: { backgroundColor: colors.success },
   doneCard: {
     margin: 16,
     backgroundColor: colors.surface,
@@ -486,33 +643,70 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   doneEmoji: { fontSize: 48 },
-  doneTitle: {
-    fontSize: 22,
-    fontFamily: 'Inter_700Bold',
-    color: colors.textPrimary,
+  doneTitle: { fontSize: 22, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  doneText: { fontSize: 15, fontFamily: 'Inter_400Regular', color: colors.textSecondary, textAlign: 'center', lineHeight: 23 },
+  doneActions: { width: '100%', gap: 8, marginTop: 8 },
+  doneActionBtn: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  doneText: {
-    fontSize: 15,
-    fontFamily: 'Inter_400Regular',
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 23,
-  },
+  doneActionText: { fontSize: 14, fontFamily: 'Inter_600SemiBold', color: colors.textPrimary },
   resetBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 8,
+    justifyContent: 'center',
     paddingVertical: 12,
-    paddingHorizontal: 24,
+  },
+  resetBtnText: { fontSize: 14, fontFamily: 'Inter_500Medium', color: colors.textSecondary },
+  timeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  timeInput: {
     backgroundColor: colors.surfaceElevated,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 18,
+    fontFamily: 'Inter_600SemiBold',
+    color: colors.textPrimary,
+    textAlign: 'center',
   },
-  resetBtnText: {
-    fontSize: 14,
-    fontFamily: 'Inter_500Medium',
-    color: colors.textSecondary,
+  colon: { fontSize: 20, color: colors.textMuted },
+  meridiemRow: { flexDirection: 'row', gap: 4 },
+  meridiemBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
   },
+  meridiemActive: { borderColor: colors.primary, backgroundColor: colors.primaryMuted },
+  meridiemText: { fontSize: 13, fontFamily: 'Inter_500Medium', color: colors.textMuted },
+  meridiemTextActive: { color: colors.primaryLight },
+  fieldLabel: {
+    fontSize: 11,
+    fontFamily: 'Inter_700Bold',
+    color: colors.textMuted,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  optionRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  optionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceElevated,
+  },
+  optionChipActive: { borderColor: colors.primary, backgroundColor: colors.primaryMuted },
+  optionText: { fontSize: 13, fontFamily: 'Inter_500Medium', color: colors.textMuted },
+  optionTextActive: { color: colors.primaryLight },
+  planDeadline: { fontSize: 14, fontFamily: 'Inter_500Medium', color: colors.textSecondary },
 });

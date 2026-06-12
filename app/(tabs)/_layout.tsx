@@ -1,41 +1,51 @@
 import { Tabs } from 'expo-router';
-import { Home, Lightbulb, Timer } from 'lucide-react-native';
+import { Home, Lightbulb, ListChecks, Timer } from 'lucide-react-native';
 import { colors } from '@/lib/colors';
 import { StyleSheet, View } from 'react-native';
+import { ModeProvider } from '@/context/ModeContext';
 
 export default function TabsLayout() {
   return (
-    <Tabs
-      screenOptions={{
-        headerShown: false,
-        tabBarStyle: styles.tabBar,
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textMuted,
-        tabBarLabelStyle: styles.tabLabel,
-        tabBarBackground: () => <View style={styles.tabBarBg} />,
-      }}>
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ size, color }) => <Home size={size} color={color} strokeWidth={2} />,
-        }}
-      />
-      <Tabs.Screen
-        name="unstuck"
-        options={{
-          title: 'Unstuck',
-          tabBarIcon: ({ size, color }) => <Lightbulb size={size} color={color} strokeWidth={2} />,
-        }}
-      />
-      <Tabs.Screen
-        name="boredom-buster"
-        options={{
-          title: 'Focus',
-          tabBarIcon: ({ size, color }) => <Timer size={size} color={color} strokeWidth={2} />,
-        }}
-      />
-    </Tabs>
+    <ModeProvider>
+      <Tabs
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: styles.tabBar,
+          tabBarActiveTintColor: colors.primary,
+          tabBarInactiveTintColor: colors.textMuted,
+          tabBarLabelStyle: styles.tabLabel,
+          tabBarBackground: () => <View style={styles.tabBarBg} />,
+        }}>
+        <Tabs.Screen
+          name="index"
+          options={{
+            title: 'Home',
+            tabBarIcon: ({ size, color }) => <Home size={size} color={color} strokeWidth={2} />,
+          }}
+        />
+        <Tabs.Screen
+          name="tasks"
+          options={{
+            title: 'Tasks',
+            tabBarIcon: ({ size, color }) => <ListChecks size={size} color={color} strokeWidth={2} />,
+          }}
+        />
+        <Tabs.Screen
+          name="unstuck"
+          options={{
+            title: 'Unstuck',
+            tabBarIcon: ({ size, color }) => <Lightbulb size={size} color={color} strokeWidth={2} />,
+          }}
+        />
+        <Tabs.Screen
+          name="boredom-buster"
+          options={{
+            title: 'Timer',
+            tabBarIcon: ({ size, color }) => <Timer size={size} color={color} strokeWidth={2} />,
+          }}
+        />
+      </Tabs>
+    </ModeProvider>
   );
 }
 
