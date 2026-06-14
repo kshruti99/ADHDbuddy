@@ -27,7 +27,7 @@ import {
 import { buildPlanBlocks, buildAnchorTimestamps, formatTimeShort } from '@/lib/time';
 import { PlanTimeline } from '@/components/PlanTimeline';
 
-type MainTab = 'unstick' | 'plan';
+type MainTab = 'unstuck' | 'plan';
 type UnstickPhase = 'input' | 'clarify' | 'steps' | 'done';
 type PlanPhase = 'input' | 'details' | 'timeline';
 
@@ -43,9 +43,9 @@ export default function UnstuckScreen() {
   const anchors = useAnchors();
   const now = useNow();
 
-  const [mainTab, setMainTab] = useState<MainTab>('unstick');
+  const [mainTab, setMainTab] = useState<MainTab>('unstuck');
 
-  // Unstick state
+  // Unstuck state
   const [phase, setPhase] = useState<UnstickPhase>('input');
   const [task, setTask] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
@@ -70,7 +70,7 @@ export default function UnstuckScreen() {
 
   useEffect(() => {
     if (tab === 'plan') setMainTab('plan');
-    if (tab === 'unstick') setMainTab('unstick');
+    if (tab === 'unstuck' || tab === 'unstick') setMainTab('unstuck');
     if (taskParam) {
       setTask(taskParam);
       setPlanTask(taskParam);
@@ -230,20 +230,20 @@ export default function UnstuckScreen() {
         </View>
 
         <View style={styles.mainTabs}>
-          {(['unstick', 'plan'] as MainTab[]).map((t) => (
+          {(['unstuck', 'plan'] as MainTab[]).map((t) => (
             <TouchableOpacity
               key={t}
               style={[styles.mainTab, mainTab === t && styles.mainTabActive]}
               onPress={() => setMainTab(t)}
               activeOpacity={0.8}>
               <Text style={[styles.mainTabText, mainTab === t && styles.mainTabTextActive]}>
-                {t === 'unstick' ? 'Unstick' : 'Plan it'}
+                {t === 'unstuck' ? 'Unstuck me' : 'Plan it'}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        {mainTab === 'unstick' && (
+        {mainTab === 'unstuck' && (
           <>
             {phase === 'input' && (
               <View style={styles.card}>
@@ -483,7 +483,7 @@ export default function UnstuckScreen() {
                 <TouchableOpacity
                   style={styles.secondaryBtn}
                   onPress={() => {
-                    setMainTab('unstick');
+                    setMainTab('unstuck');
                     setTask(planTask);
                     goToSteps(planTask);
                   }}

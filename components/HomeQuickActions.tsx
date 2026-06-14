@@ -48,7 +48,7 @@ export function HomeQuickActions({
       label: "I'm stuck",
       icon: Lightbulb,
       color: colors.warning,
-      onPress: () => router.push({ pathname: '/unstuck', params: { tab: 'unstick' } }),
+      onPress: () => router.push({ pathname: '/unstuck', params: { tab: 'unstuck' } }),
     },
     {
       label: 'Start focus',
