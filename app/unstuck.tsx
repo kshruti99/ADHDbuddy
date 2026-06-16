@@ -12,7 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CheckCircle, Lightbulb, RotateCcw, X } from 'lucide-react-native';
 import { colors } from '@/lib/colors';
-import { supabase } from '@/lib/supabase';
+import { storageGet, storageSet, STORAGE_KEYS } from '@/lib/storage';
 import { useMode } from '@/context/ModeContext';
 import { useFocus } from '@/hooks/useFocus';
 import { useBacklog } from '@/hooks/useBacklog';
@@ -105,12 +105,16 @@ export default function UnstuckScreen() {
     setSkipCount(0);
     setPhase('steps');
 
-    const { data } = await supabase
-      .from('task_breakdowns')
-      .insert({ original_task: taskText, micro_steps: built, steps_completed: 0 })
-      .select()
-      .maybeSingle();
-    if (data) setBreakdownId(data.id);
+    const newBreakdown = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+      original_task: taskText,
+      micro_steps: built,
+      steps_completed: 0,
+      created_at: new Date().toISOString(),
+    };
+    const existing = await storageGet<unknown[]>(STORAGE_KEYS.TASK_BREAKDOWNS, []);
+    await storageSet(STORAGE_KEYS.TASK_BREAKDOWNS, [...existing, newBreakdown]);
+    setBreakdownId(newBreakdown.id);
   }
 
   function handleClarify(value: string) {
@@ -135,10 +139,11 @@ export default function UnstuckScreen() {
     setCompletedSteps(updated);
 
     if (breakdownId) {
-      await supabase
-        .from('task_breakdowns')
-        .update({ steps_completed: idx + 1 })
-        .eq('id', breakdownId);
+      const all = await storageGet<{ id: string; steps_completed: number }[]>(STORAGE_KEYS.TASK_BREAKDOWNS, []);
+      await storageSet(
+        STORAGE_KEYS.TASK_BREAKDOWNS,
+        all.map((b) => (b.id === breakdownId ? { ...b, steps_completed: idx + 1 } : b))
+      );
     }
 
     setTimeout(() => {
@@ -189,15 +194,21 @@ export default function UnstuckScreen() {
     await anchors.save(planTask.trim() || 'Event', timeText, commuteMin, prepMin);
     const timestamps = buildAnchorTimestamps(timeText, commuteMin, prepMin);
     if (timestamps) {
-      await supabase.from('adhd_schedules').insert({
-        deadline_label: planTask.trim() || 'Event',
-        deadline_at: timestamps.anchor_at,
-        steps: planBlocks.map((b) => ({
-          label: b.label,
-          time: b.time.toISOString(),
-          coaching: b.coaching,
-        })),
-      });
+      const existing = await storageGet<unknown[]>(STORAGE_KEYS.SCHEDULES, []);
+      await storageSet(STORAGE_KEYS.SCHEDULES, [
+        ...existing,
+        {
+          id: Date.now().toString(36),
+          deadline_label: planTask.trim() || 'Event',
+          deadline_at: timestamps.anchor_at,
+          steps: planBlocks.map((b) => ({
+            label: b.label,
+            time: b.time.toISOString(),
+            coaching: b.coaching,
+          })),
+          created_at: new Date().toISOString(),
+        },
+      ]);
     }
     router.dismiss();
   }

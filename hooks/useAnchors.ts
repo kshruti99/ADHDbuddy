@@ -1,23 +1,28 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase, type AnchorItem } from '@/lib/supabase';
+import { storageGet, storageSet, STORAGE_KEYS } from '@/lib/storage';
+import type { AnchorItem } from '@/lib/supabase';
 import { buildAnchorTimestamps, getAnchorDate } from '@/lib/time';
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
+
+function sortedByTime(anchors: AnchorItem[]): AnchorItem[] {
+  const now = new Date();
+  return [...anchors].sort((a, b) => {
+    const da = getAnchorDate(a, now)?.getTime() ?? Infinity;
+    const db = getAnchorDate(b, now)?.getTime() ?? Infinity;
+    return da - db;
+  });
+}
 
 export function useAnchors() {
   const [anchors, setAnchors] = useState<AnchorItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from('anchors').select('*');
-    if (data) {
-      const now = new Date();
-      const sorted = (data as AnchorItem[]).sort((a, b) => {
-        const da = getAnchorDate(a, now)?.getTime() ?? Infinity;
-        const db = getAnchorDate(b, now)?.getTime() ?? Infinity;
-        return da - db;
-      });
-      setAnchors(sorted);
-    }
-    if (error) console.error('loadAnchors error:', error);
+    const all = await storageGet<AnchorItem[]>(STORAGE_KEYS.ANCHORS, []);
+    setAnchors(sortedByTime(all));
   }, []);
 
   useEffect(() => {
@@ -40,36 +45,46 @@ export function useAnchors() {
     const timestamps = buildAnchorTimestamps(timeText, commuteMin, prepMin);
     if (!timestamps) return false;
 
-    const fullPayload = {
-      title: title.trim(),
-      anchor_time: timestamps.anchor_time,
-      anchor_at: timestamps.anchor_at,
-      feet_on_floor_at: timestamps.feet_on_floor_at,
-      feet_on_floor_time: null,
-      commute_min: commuteMin,
-      prep_min: prepMin,
-    };
-
-    const legacyPayload = {
-      title: title.trim(),
-      anchor_time: timestamps.anchor_time,
-      commute_min: commuteMin,
-      prep_min: prepMin,
-    };
+    const all = await storageGet<AnchorItem[]>(STORAGE_KEYS.ANCHORS, []);
 
     if (editing) {
-      const { error } = await supabase.from('anchors').update(fullPayload).eq('id', editing.id);
-      if (error) await supabase.from('anchors').update(legacyPayload).eq('id', editing.id);
+      const updated = all.map((a) =>
+        a.id === editing.id
+          ? {
+              ...a,
+              title: title.trim(),
+              anchor_time: timestamps.anchor_time,
+              anchor_at: timestamps.anchor_at,
+              feet_on_floor_at: timestamps.feet_on_floor_at,
+              feet_on_floor_time: null,
+              commute_min: commuteMin,
+              prep_min: prepMin,
+            }
+          : a
+      );
+      await storageSet(STORAGE_KEYS.ANCHORS, updated);
     } else {
-      const { error } = await supabase.from('anchors').insert(fullPayload);
-      if (error) await supabase.from('anchors').insert(legacyPayload);
+      const newAnchor: AnchorItem = {
+        id: makeId(),
+        title: title.trim(),
+        anchor_time: timestamps.anchor_time,
+        anchor_at: timestamps.anchor_at,
+        feet_on_floor_at: timestamps.feet_on_floor_at,
+        feet_on_floor_time: null,
+        commute_min: commuteMin,
+        prep_min: prepMin,
+        created_at: new Date().toISOString(),
+      };
+      await storageSet(STORAGE_KEYS.ANCHORS, [...all, newAnchor]);
     }
     await load();
     return true;
   }
 
   async function removeFromToday(anchor: AnchorItem) {
-    await supabase.from('anchors').delete().eq('id', anchor.id);
+    const all = await storageGet<AnchorItem[]>(STORAGE_KEYS.ANCHORS, []);
+    const updated = all.filter((a) => a.id !== anchor.id);
+    await storageSet(STORAGE_KEYS.ANCHORS, updated);
     setAnchors((prev) => prev.filter((a) => a.id !== anchor.id));
   }
 

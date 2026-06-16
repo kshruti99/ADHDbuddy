@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '@/lib/supabase';
+import { storageGet, storageSet, STORAGE_KEYS } from '@/lib/storage';
 import { localDayKey, startOfTodayISO } from '@/lib/dayBoundary';
+import type { FocusItem, BacklogItem } from '@/lib/supabase';
 import type { Mode } from '@/lib/constants';
 
-const LAST_ACTIVE_KEY = 'adhd_last_active_date';
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
 
 /**
- * Runs the Midnight Purge on first mount and on app foreground transitions.
+ * Midnight Purge — runs on first mount each day and on app foreground.
  *
- * Purge behaviour:
  * - Incomplete current_focus items older than today → moved to brain_backlog vault.
- * - Completed current_focus items older than today → deleted (already recorded in task_history).
- * - Writes today's date key so the purge only runs once per day.
- *
- * Returns `purged` (true if a purge just ran) so the dashboard can open in
- * Clean Slate state on a fresh day.
+ * - Completed current_focus items older than today → removed (already in task_history).
+ * - Everything lives in AsyncStorage (localStorage on web) — no server calls.
  */
 export function useDailyReset(mode: Mode, onComplete?: () => void) {
   const [purged, setPurged] = useState(false);
@@ -30,7 +28,7 @@ export function useDailyReset(mode: Mode, onComplete?: () => void) {
 
     try {
       const today = localDayKey();
-      const lastActive = await AsyncStorage.getItem(LAST_ACTIVE_KEY);
+      const lastActive = await storageGet<string | null>(STORAGE_KEYS.LAST_ACTIVE_DATE, null);
 
       if (lastActive === today) {
         setRunning(false);
@@ -39,39 +37,40 @@ export function useDailyReset(mode: Mode, onComplete?: () => void) {
 
       const cutoff = startOfTodayISO();
 
-      // Fetch stale incomplete items for this mode
-      const { data: staleIncomplete } = await supabase
-        .from('current_focus')
-        .select('*')
-        .eq('mode', mode)
-        .eq('completed', false)
-        .lt('created_at', cutoff);
+      // Read all focus items (all modes)
+      const allFocus = await storageGet<FocusItem[]>(STORAGE_KEYS.FOCUS, []);
+      const staleIncomplete = allFocus.filter(
+        (f) => f.mode === mode && !f.completed && f.created_at < cutoff
+      );
+      const staleCompleted = allFocus.filter(
+        (f) => f.mode === mode && f.completed && f.created_at < cutoff
+      );
+      const staleIds = new Set([
+        ...staleIncomplete.map((f) => f.id),
+        ...staleCompleted.map((f) => f.id),
+      ]);
 
-      if (staleIncomplete && staleIncomplete.length > 0) {
-        // Move to brain_backlog vault
-        await supabase.from('brain_backlog').insert(
-          staleIncomplete.map((item) => ({
-            content: item.content,
-            mode: item.mode,
-            energy_tag: 'quick_win',
+      if (staleIds.size > 0) {
+        // Remove stale items from focus
+        const cleanedFocus = allFocus.filter((f) => !staleIds.has(f.id));
+        await storageSet(STORAGE_KEYS.FOCUS, cleanedFocus);
+
+        // Move incomplete items to backlog vault
+        if (staleIncomplete.length > 0) {
+          const allBacklog = await storageGet<BacklogItem[]>(STORAGE_KEYS.BACKLOG, []);
+          const backlogEntries: BacklogItem[] = staleIncomplete.map((f) => ({
+            id: makeId(),
+            content: f.content,
+            mode: f.mode,
+            energy_tag: 'quick_win' as const,
             completed: false,
-          }))
-        );
-        await supabase
-          .from('current_focus')
-          .delete()
-          .in('id', staleIncomplete.map((i) => i.id));
+            created_at: new Date().toISOString(),
+          }));
+          await storageSet(STORAGE_KEYS.BACKLOG, [...allBacklog, ...backlogEntries]);
+        }
       }
 
-      // Delete stale completed items (already in task_history)
-      await supabase
-        .from('current_focus')
-        .delete()
-        .eq('mode', mode)
-        .eq('completed', true)
-        .lt('created_at', cutoff);
-
-      await AsyncStorage.setItem(LAST_ACTIVE_KEY, today);
+      await storageSet(STORAGE_KEYS.LAST_ACTIVE_DATE, today);
       setPurged(true);
       onComplete?.();
     } catch (err) {
@@ -81,12 +80,10 @@ export function useDailyReset(mode: Mode, onComplete?: () => void) {
     }
   }, [mode, onComplete]);
 
-  // Run on mount
   useEffect(() => {
     runPurge();
   }, [runPurge]);
 
-  // Re-run when app comes back to foreground (e.g. left open overnight)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {

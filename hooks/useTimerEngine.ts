@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Animated } from 'react-native';
-import { supabase, type SideQuest } from '@/lib/supabase';
+import type { SideQuest } from '@/lib/supabase';
 
 export const TOTAL_SECONDS = 10 * 60;
 
@@ -93,40 +93,24 @@ export function useTimerEngine(sessionId: string, onTimerDone?: () => void) {
     setSideQuests([]);
   }
 
-  async function saveSideQuest() {
+  function saveSideQuest() {
     if (!sideQuestInput.trim()) return;
-    const newQuest: Omit<SideQuest, 'id' | 'created_at'> = {
+    const newQuest: SideQuest = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2),
       content: sideQuestInput.trim(),
       completed: false,
       session_id: sessionId,
+      created_at: new Date().toISOString(),
     };
     setSideQuestInput('');
     setSideQuestModalVisible(false);
-    try {
-      const { data } = await supabase
-        .from('side_quests')
-        .insert({ ...newQuest })
-        .select()
-        .maybeSingle();
-      setSideQuests((prev) => [
-        ...prev,
-        data ? (data as SideQuest) : { ...newQuest, id: Date.now().toString(), created_at: new Date().toISOString() },
-      ]);
-    } catch {
-      setSideQuests((prev) => [
-        ...prev,
-        { ...newQuest, id: Date.now().toString(), created_at: new Date().toISOString() },
-      ]);
-    }
+    setSideQuests((prev) => [...prev, newQuest]);
   }
 
-  async function toggleSideQuest(id: string) {
-    const quest = sideQuests.find((q) => q.id === id);
-    if (!quest) return;
-    setSideQuests((prev) => prev.map((q) => (q.id === id ? { ...q, completed: !q.completed } : q)));
-    try {
-      await supabase.from('side_quests').update({ completed: !quest.completed }).eq('id', id);
-    } catch { /* ignore */ }
+  function toggleSideQuest(id: string) {
+    setSideQuests((prev) =>
+      prev.map((q) => (q.id === id ? { ...q, completed: !q.completed } : q))
+    );
   }
 
   const progressWidth = progressAnim.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
