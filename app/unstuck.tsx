@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { CheckCircle, Lightbulb, RotateCcw } from 'lucide-react-native';
+import { CheckCircle, Lightbulb, RotateCcw, X } from 'lucide-react-native';
 import { colors } from '@/lib/colors';
 import { supabase } from '@/lib/supabase';
 import { useMode } from '@/context/ModeContext';
@@ -199,17 +199,17 @@ export default function UnstuckScreen() {
         })),
       });
     }
-    router.push('/tasks');
+    router.dismiss();
   }
 
   async function addToFocus() {
     await focus.add(task);
-    router.push({ pathname: '/tasks', params: { segment: 'focus' } });
+    router.dismiss();
   }
 
   async function addToBacklog() {
     await backlog.add(task);
-    router.push({ pathname: '/tasks', params: { segment: 'backlog' } });
+    router.dismiss();
   }
 
   const allDone = completedSteps.length > 0 && completedSteps.every(Boolean);
@@ -225,6 +225,9 @@ export default function UnstuckScreen() {
           <View style={styles.titleRow}>
             <Lightbulb size={22} color={colors.accent} strokeWidth={2} />
             <Text style={styles.title}>Unstuck</Text>
+            <TouchableOpacity onPress={() => router.dismiss()} style={styles.closeBtn} activeOpacity={0.7}>
+              <X size={20} color={colors.textMuted} strokeWidth={2} />
+            </TouchableOpacity>
           </View>
           <Text style={styles.subtitle}>Break it down or plan backward from a deadline</Text>
         </View>
@@ -505,7 +508,8 @@ const styles = StyleSheet.create({
   container: { paddingBottom: 40 },
   header: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 12 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  title: { fontSize: 24, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  title: { flex: 1, fontSize: 24, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  closeBtn: { padding: 4 },
   subtitle: { fontSize: 14, fontFamily: 'Inter_400Regular', color: colors.textMuted },
   mainTabs: {
     flexDirection: 'row',

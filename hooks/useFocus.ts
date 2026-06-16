@@ -67,6 +67,18 @@ export function useFocus(mode: Mode) {
     setItems((prev) => prev.filter((f) => !f.completed));
   }
 
+  /** Marks a task done, writes it to task_history, and removes it from current_focus. */
+  async function complete(item: FocusItem) {
+    await supabase.from('task_history').insert({
+      content: item.content,
+      mode: item.mode,
+      completed_at: new Date().toISOString(),
+      source_focus_id: item.id,
+    });
+    await supabase.from('current_focus').delete().eq('id', item.id);
+    setItems((prev) => prev.filter((f) => f.id !== item.id));
+  }
+
   return {
     items,
     loading,
@@ -79,6 +91,7 @@ export function useFocus(mode: Mode) {
     markDone,
     removeFromToday,
     clearFinished,
+    complete,
     reload: load,
   };
 }
