@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
-import { supabase, type BacklogItem } from '@/lib/supabase';
+import { storageGet, storageSet, STORAGE_KEYS } from '@/lib/storage';
+import type { BacklogItem, FocusItem } from '@/lib/supabase';
 import type { EnergyTag, Mode } from '@/lib/constants';
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+}
 
 export function useBacklog(mode: Mode) {
   const [items, setItems] = useState<BacklogItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('brain_backlog')
-      .select('*')
-      .eq('mode', mode)
-      .order('created_at', { ascending: false });
-    if (data) setItems(data as BacklogItem[]);
-    if (error) console.error('loadBacklog error:', error);
+    const all = await storageGet<BacklogItem[]>(STORAGE_KEYS.BACKLOG, []);
+    setItems(all.filter((b) => b.mode === mode));
   }, [mode]);
 
   useEffect(() => {
@@ -26,20 +26,31 @@ export function useBacklog(mode: Mode) {
     return () => { cancelled = true; };
   }, [load]);
 
+  async function persist(updated: BacklogItem[]) {
+    const all = await storageGet<BacklogItem[]>(STORAGE_KEYS.BACKLOG, []);
+    const otherModes = all.filter((b) => b.mode !== mode);
+    await storageSet(STORAGE_KEYS.BACKLOG, [...otherModes, ...updated]);
+    setItems(updated);
+  }
+
   async function add(content: string, energyTag: EnergyTag = 'quick_win') {
     if (!content.trim()) return;
-    const { data } = await supabase
-      .from('brain_backlog')
-      .insert({ content: content.trim(), mode, energy_tag: energyTag })
-      .select()
-      .maybeSingle();
-    if (data) setItems((prev) => [data as BacklogItem, ...prev]);
+    const newItem: BacklogItem = {
+      id: makeId(),
+      content: content.trim(),
+      mode,
+      energy_tag: energyTag,
+      completed: false,
+      created_at: new Date().toISOString(),
+    };
+    await persist([newItem, ...items]);
   }
 
   async function toggle(item: BacklogItem) {
-    const updated = !item.completed;
-    await supabase.from('brain_backlog').update({ completed: updated }).eq('id', item.id);
-    setItems((prev) => prev.map((b) => (b.id === item.id ? { ...b, completed: updated } : b)));
+    const updated = items.map((b) =>
+      b.id === item.id ? { ...b, completed: !b.completed } : b
+    );
+    await persist(updated);
   }
 
   async function markDone(item: BacklogItem) {
@@ -47,16 +58,15 @@ export function useBacklog(mode: Mode) {
   }
 
   async function deprioritize(item: BacklogItem) {
-    await supabase.from('brain_backlog').update({ completed: false }).eq('id', item.id);
-    setItems((prev) => {
-      const rest = prev.filter((b) => b.id !== item.id);
-      return [...rest, item];
-    });
+    const rest = items.filter((b) => b.id !== item.id);
+    await persist([...rest, { ...item, completed: false }]);
   }
 
   async function removeFromToday(item: BacklogItem) {
-    await supabase.from('brain_backlog').update({ completed: true }).eq('id', item.id);
-    setItems((prev) => prev.map((b) => (b.id === item.id ? { ...b, completed: true } : b)));
+    const updated = items.map((b) =>
+      b.id === item.id ? { ...b, completed: true } : b
+    );
+    await persist(updated);
   }
 
   async function promoteToFocus(
@@ -68,22 +78,27 @@ export function useBacklog(mode: Mode) {
       onOverflow(item.content);
       return false;
     }
-    await supabase.from('current_focus').insert({
+    // Add to focus storage
+    const allFocus = await storageGet<FocusItem[]>(STORAGE_KEYS.FOCUS, []);
+    const newFocusItem: FocusItem = {
+      id: makeId(),
       content: item.content,
       mode,
       position: focusCount,
-    });
-    await supabase.from('brain_backlog').delete().eq('id', item.id);
-    setItems((prev) => prev.filter((b) => b.id !== item.id));
+      completed: false,
+      created_at: new Date().toISOString(),
+    };
+    await storageSet(STORAGE_KEYS.FOCUS, [...allFocus, newFocusItem]);
+
+    // Remove from backlog
+    const updated = items.filter((b) => b.id !== item.id);
+    await persist(updated);
     return true;
   }
 
   async function clearFinished() {
-    const finished = items.filter((b) => b.completed);
-    await Promise.all(
-      finished.map((b) => supabase.from('brain_backlog').delete().eq('id', b.id))
-    );
-    setItems((prev) => prev.filter((b) => !b.completed));
+    const updated = items.filter((b) => !b.completed);
+    await persist(updated);
   }
 
   return {

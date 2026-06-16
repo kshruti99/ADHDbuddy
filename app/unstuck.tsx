@@ -10,9 +10,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { CheckCircle, Lightbulb, RotateCcw } from 'lucide-react-native';
+import { CheckCircle, Lightbulb, RotateCcw, X } from 'lucide-react-native';
 import { colors } from '@/lib/colors';
-import { supabase } from '@/lib/supabase';
+import { storageGet, storageSet, STORAGE_KEYS } from '@/lib/storage';
 import { useMode } from '@/context/ModeContext';
 import { useFocus } from '@/hooks/useFocus';
 import { useBacklog } from '@/hooks/useBacklog';
@@ -27,7 +27,7 @@ import {
 import { buildPlanBlocks, buildAnchorTimestamps, formatTimeShort } from '@/lib/time';
 import { PlanTimeline } from '@/components/PlanTimeline';
 
-type MainTab = 'unstick' | 'plan';
+type MainTab = 'unstuck' | 'plan';
 type UnstickPhase = 'input' | 'clarify' | 'steps' | 'done';
 type PlanPhase = 'input' | 'details' | 'timeline';
 
@@ -43,9 +43,9 @@ export default function UnstuckScreen() {
   const anchors = useAnchors();
   const now = useNow();
 
-  const [mainTab, setMainTab] = useState<MainTab>('unstick');
+  const [mainTab, setMainTab] = useState<MainTab>('unstuck');
 
-  // Unstick state
+  // Unstuck state
   const [phase, setPhase] = useState<UnstickPhase>('input');
   const [task, setTask] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
@@ -70,7 +70,7 @@ export default function UnstuckScreen() {
 
   useEffect(() => {
     if (tab === 'plan') setMainTab('plan');
-    if (tab === 'unstick') setMainTab('unstick');
+    if (tab === 'unstuck' || tab === 'unstick') setMainTab('unstuck');
     if (taskParam) {
       setTask(taskParam);
       setPlanTask(taskParam);
@@ -105,12 +105,16 @@ export default function UnstuckScreen() {
     setSkipCount(0);
     setPhase('steps');
 
-    const { data } = await supabase
-      .from('task_breakdowns')
-      .insert({ original_task: taskText, micro_steps: built, steps_completed: 0 })
-      .select()
-      .maybeSingle();
-    if (data) setBreakdownId(data.id);
+    const newBreakdown = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+      original_task: taskText,
+      micro_steps: built,
+      steps_completed: 0,
+      created_at: new Date().toISOString(),
+    };
+    const existing = await storageGet<unknown[]>(STORAGE_KEYS.TASK_BREAKDOWNS, []);
+    await storageSet(STORAGE_KEYS.TASK_BREAKDOWNS, [...existing, newBreakdown]);
+    setBreakdownId(newBreakdown.id);
   }
 
   function handleClarify(value: string) {
@@ -135,10 +139,11 @@ export default function UnstuckScreen() {
     setCompletedSteps(updated);
 
     if (breakdownId) {
-      await supabase
-        .from('task_breakdowns')
-        .update({ steps_completed: idx + 1 })
-        .eq('id', breakdownId);
+      const all = await storageGet<{ id: string; steps_completed: number }[]>(STORAGE_KEYS.TASK_BREAKDOWNS, []);
+      await storageSet(
+        STORAGE_KEYS.TASK_BREAKDOWNS,
+        all.map((b) => (b.id === breakdownId ? { ...b, steps_completed: idx + 1 } : b))
+      );
     }
 
     setTimeout(() => {
@@ -189,27 +194,33 @@ export default function UnstuckScreen() {
     await anchors.save(planTask.trim() || 'Event', timeText, commuteMin, prepMin);
     const timestamps = buildAnchorTimestamps(timeText, commuteMin, prepMin);
     if (timestamps) {
-      await supabase.from('adhd_schedules').insert({
-        deadline_label: planTask.trim() || 'Event',
-        deadline_at: timestamps.anchor_at,
-        steps: planBlocks.map((b) => ({
-          label: b.label,
-          time: b.time.toISOString(),
-          coaching: b.coaching,
-        })),
-      });
+      const existing = await storageGet<unknown[]>(STORAGE_KEYS.SCHEDULES, []);
+      await storageSet(STORAGE_KEYS.SCHEDULES, [
+        ...existing,
+        {
+          id: Date.now().toString(36),
+          deadline_label: planTask.trim() || 'Event',
+          deadline_at: timestamps.anchor_at,
+          steps: planBlocks.map((b) => ({
+            label: b.label,
+            time: b.time.toISOString(),
+            coaching: b.coaching,
+          })),
+          created_at: new Date().toISOString(),
+        },
+      ]);
     }
-    router.push('/tasks');
+    router.dismiss();
   }
 
   async function addToFocus() {
     await focus.add(task);
-    router.push({ pathname: '/tasks', params: { segment: 'focus' } });
+    router.dismiss();
   }
 
   async function addToBacklog() {
     await backlog.add(task);
-    router.push({ pathname: '/tasks', params: { segment: 'backlog' } });
+    router.dismiss();
   }
 
   const allDone = completedSteps.length > 0 && completedSteps.every(Boolean);
@@ -225,25 +236,28 @@ export default function UnstuckScreen() {
           <View style={styles.titleRow}>
             <Lightbulb size={22} color={colors.accent} strokeWidth={2} />
             <Text style={styles.title}>Unstuck</Text>
+            <TouchableOpacity onPress={() => router.dismiss()} style={styles.closeBtn} activeOpacity={0.7}>
+              <X size={20} color={colors.textMuted} strokeWidth={2} />
+            </TouchableOpacity>
           </View>
           <Text style={styles.subtitle}>Break it down or plan backward from a deadline</Text>
         </View>
 
         <View style={styles.mainTabs}>
-          {(['unstick', 'plan'] as MainTab[]).map((t) => (
+          {(['unstuck', 'plan'] as MainTab[]).map((t) => (
             <TouchableOpacity
               key={t}
               style={[styles.mainTab, mainTab === t && styles.mainTabActive]}
               onPress={() => setMainTab(t)}
               activeOpacity={0.8}>
               <Text style={[styles.mainTabText, mainTab === t && styles.mainTabTextActive]}>
-                {t === 'unstick' ? 'Unstick' : 'Plan it'}
+                {t === 'unstuck' ? 'Unstuck me' : 'Plan it'}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        {mainTab === 'unstick' && (
+        {mainTab === 'unstuck' && (
           <>
             {phase === 'input' && (
               <View style={styles.card}>
@@ -483,7 +497,7 @@ export default function UnstuckScreen() {
                 <TouchableOpacity
                   style={styles.secondaryBtn}
                   onPress={() => {
-                    setMainTab('unstick');
+                    setMainTab('unstuck');
                     setTask(planTask);
                     goToSteps(planTask);
                   }}
@@ -505,7 +519,8 @@ const styles = StyleSheet.create({
   container: { paddingBottom: 40 },
   header: { paddingHorizontal: 24, paddingTop: 24, paddingBottom: 12 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
-  title: { fontSize: 24, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  title: { flex: 1, fontSize: 24, fontFamily: 'Inter_700Bold', color: colors.textPrimary },
+  closeBtn: { padding: 4 },
   subtitle: { fontSize: 14, fontFamily: 'Inter_400Regular', color: colors.textMuted },
   mainTabs: {
     flexDirection: 'row',

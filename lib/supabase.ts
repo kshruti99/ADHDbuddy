@@ -60,3 +60,12 @@ export type AdhdSchedule = {
   steps: Record<string, unknown>[];
   created_at: string;
 };
+
+export type TaskHistory = {
+  id: string;
+  content: string;
+  mode: Mode;
+  completed_at: string;
+  source_focus_id: string | null;
+  created_at: string;
+};
